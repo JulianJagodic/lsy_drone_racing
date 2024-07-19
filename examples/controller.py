@@ -1,206 +1,145 @@
-"""Write your control strategy.
-
-Then run:
-
-    $ python scripts/sim --config config/getting_started.yaml
-
-Tips:
-    Search for strings `INSTRUCTIONS:` and `REPLACE THIS (START)` in this file.
-
-    Change the code between the 5 blocks starting with
-        #########################
-        # REPLACE THIS (START) ##
-        #########################
-    and ending with
-        #########################
-        # REPLACE THIS (END) ####
-        #########################
-    with your own code.
-
-    They are in methods:
-        1) __init__
-        2) compute_control
-        3) step_learn (optional)
-        4) episode_learn (optional)
-
-"""
-
 from __future__ import annotations  # Python 3.10 type hints
 
 import numpy as np
+import yaml
+import pybullet as p
 from scipy import interpolate
-
+import math
+from itertools import permutations
 from lsy_drone_racing.command import Command
 from lsy_drone_racing.controller import BaseController
 from lsy_drone_racing.utils import draw_trajectory
-
+from scipy.interpolate import CubicSpline
+import os
 
 class Controller(BaseController):
-    """Template controller class."""
+    """PD controller class."""
 
-    def __init__(
-        self,
-        initial_obs: np.ndarray,
-        initial_info: dict,
-        buffer_size: int = 100,
-        verbose: bool = False,
-    ):
-        """Initialization of the controller.
+    def distance(self, p1, p2):
+        return math.sqrt((p2[0] - p1[0])**2 + (p2[1] - p1[1])**2 + (p2[2] - p1[2])**2)
+    
+    def find_shortest_path(self, waypoints):
+        shortest_path = None
+        shortest_distance = float('inf')
+        for order in permutations(range(len(waypoints))):
+            dist = self.total_path_distance(waypoints, order)
+            if dist < shortest_distance:
+                shortest_distance = dist
+                shortest_path = order
+        return shortest_path, shortest_distance
 
-        INSTRUCTIONS:
-            The controller's constructor has access the initial state `initial_obs` and the a priori
-            infromation contained in dictionary `initial_info`. Use this method to initialize
-            constants, counters, pre-plan trajectories, etc.
+    def total_path_distance(self, waypoints, order):
+        total_dist = 0
+        for i in range(len(waypoints) - 1):
+            start_point = waypoints[order[i]]
+            end_point = waypoints[order[i + 1]]
+            total_dist += self.distance(start_point, end_point)
+        return total_dist
 
-        Args:
-            initial_obs: The initial observation of the quadrotor's state
-                [x, x_dot, y, y_dot, z, z_dot, phi, theta, psi, p, q, r].
-            initial_info: The a priori information as a dictionary with keys 'symbolic_model',
-                'nominal_physical_parameters', 'nominal_gates_pos_and_type', etc.
-            buffer_size: Size of the data buffers used in method `learn()`.
-            verbose: Turn on and off additional printouts and plots.
-        """
+    def __init__(self, initial_obs: np.ndarray, initial_info: dict, buffer_size: int = 100, verbose: bool = False):
         super().__init__(initial_obs, initial_info, buffer_size, verbose)
-        # Save environment and control parameters.
         self.CTRL_TIMESTEP = initial_info["ctrl_timestep"]
         self.CTRL_FREQ = initial_info["ctrl_freq"]
-        self.initial_obs = initial_obs
-        self.VERBOSE = verbose
-        self.BUFFER_SIZE = buffer_size
-
-        # Store a priori scenario information.
-        self.NOMINAL_GATES = initial_info["nominal_gates_pos_and_type"]
-        self.NOMINAL_OBSTACLES = initial_info["nominal_obstacles_pos"]
-
-        # Reset counters and buffers.
-        self.reset()
-        self.episode_reset()
 
         #########################
         # REPLACE THIS (START) ##
         #########################
 
-        # Example: Hard-code waypoints through the gates. Obviously this is a crude way of
-        # completing the challenge that is highly susceptible to noise and does not generalize at
-        # all. It is meant solely as an example on how the drones can be controlled
-        waypoints = []
-        waypoints.append([self.initial_obs[0], self.initial_obs[2], 0.3])
-        gates = self.NOMINAL_GATES
+        # Define the path to the YAML file
+        print("Current working directory:", os.getcwd())
+
+        yaml_path = '/home/julian/repos/lsy_drone_racing/safe-control-gym/competition/level2.yaml'
+
+        # Check if the file exists
+        if not os.path.exists(yaml_path):
+            print("File does not exist.")
+        else:
+            # Parse the YAML file
+            with open(yaml_path, 'r') as file:
+                level_data = yaml.safe_load(file)
+            print("Successfully loaded YAML file.")
+        
+        # Access the gates data
+        gates = level_data['quadrotor_config']['gates']
+
+        # Get the z values from initial_info
         z_low = initial_info["gate_dimensions"]["low"]["height"]
         z_high = initial_info["gate_dimensions"]["tall"]["height"]
-        waypoints.append([1, 0, z_low])
-        waypoints.append([gates[0][0] + 0.2, gates[0][1] + 0.1, z_low])
-        waypoints.append([gates[0][0] + 0.1, gates[0][1], z_low])
-        waypoints.append([gates[0][0] - 0.1, gates[0][1], z_low])
-        waypoints.append(
-            [
-                (gates[0][0] + gates[1][0]) / 2 - 0.7,
-                (gates[0][1] + gates[1][1]) / 2 - 0.3,
-                (z_low + z_high) / 2,
-            ]
-        )
-        waypoints.append(
-            [
-                (gates[0][0] + gates[1][0]) / 2 - 0.5,
-                (gates[0][1] + gates[1][1]) / 2 - 0.6,
-                (z_low + z_high) / 2,
-            ]
-        )
-        waypoints.append([gates[1][0] - 0.3, gates[1][1] - 0.2, z_high])
-        waypoints.append([gates[1][0] + 0.2, gates[1][1] + 0.2, z_high])
-        waypoints.append([gates[2][0], gates[2][1] - 0.4, z_low])
-        waypoints.append([gates[2][0], gates[2][1] + 0.1, z_low])
-        waypoints.append([gates[2][0], gates[2][1] + 0.1, z_high + 0.2])
-        waypoints.append([gates[3][0], gates[3][1] + 0.1, z_high])
-        waypoints.append([gates[3][0], gates[3][1] - 0.1, z_high + 0.1])
-        waypoints.append(
-            [
-                initial_info["x_reference"][0],
-                initial_info["x_reference"][2],
-                initial_info["x_reference"][4],
-            ]
-        )
+
+        waypoints = []
+        for gate in gates:
+            x, y, _, _, _, _, gate_type = gate
+            z = z_high if gate_type == 1 else z_low
+            waypoints.append([x, y, z])
+
+        # Find the shortest path through the waypoints
+        order, total_dist = self.find_shortest_path(waypoints)
+        waypoints = [waypoints[i] for i in order]
+        waypoints.insert(0, [initial_obs[0], initial_obs[1], 0.3])
+        waypoints.append([initial_info["x_reference"][0], initial_info["x_reference"][2], initial_info["x_reference"][4]])
+
         waypoints = np.array(waypoints)
-
-        tck, u = interpolate.splprep([waypoints[:, 0], waypoints[:, 1], waypoints[:, 2]], s=0.1)
         self.waypoints = waypoints
-        duration = 12
-        t = np.linspace(0, 1, int(duration * self.CTRL_FREQ))
-        self.ref_x, self.ref_y, self.ref_z = interpolate.splev(t, tck)
-        assert max(self.ref_z) < 2.5, "Drone must stay below the ceiling"
 
-        if self.VERBOSE:
-            # Draw the trajectory on PyBullet's GUI.
-            draw_trajectory(initial_info, self.waypoints, self.ref_x, self.ref_y, self.ref_z)
+        # Create smooth trajectory using cubic splines
+        num_waypoints = len(waypoints)
+        t = np.linspace(0, 1, num_waypoints)
+        cs_x = CubicSpline(t, waypoints[:, 0])
+        cs_y = CubicSpline(t, waypoints[:, 1])
+        cs_z = CubicSpline(t, waypoints[:, 2])
+        dense_t = np.linspace(0, 1, num_waypoints * 10)
+        x_reference = cs_x(dense_t)
+        y_reference = cs_y(dense_t)
+        z_reference = cs_z(dense_t)
+        reference_trajectory = np.vstack((x_reference, y_reference, z_reference)).T
+        self.reference_trajectory = reference_trajectory
+
+        for i in range(len(reference_trajectory) - 1):
+            point1 = reference_trajectory[i]
+            point2 = reference_trajectory[i + 1]
+            p.addUserDebugLine(point1, point2, [1, 0, 0], 3)
+
+        # PD controller gains
+        self.kp = np.array([1.0, 1.0, 1.0])  # Proportional gains
+        self.kd = np.array([0.1, 0.1, 0.1])  # Derivative gains
 
         self._take_off = False
         self._setpoint_land = False
         self._land = False
+
         #########################
         # REPLACE THIS (END) ####
         #########################
 
-    def compute_control(
-        self,
-        ep_time: float,
-        obs: np.ndarray,
-        reward: float | None = None,
-        done: bool | None = None,
-        info: dict | None = None,
-    ) -> tuple[Command, list]:
-        """Pick command sent to the quadrotor through a Crazyswarm/Crazyradio-like interface.
 
-        INSTRUCTIONS:
-            Re-implement this method to return the target position, velocity, acceleration,
-            attitude, and attitude rates to be sent from Crazyswarm to the Crazyflie using, e.g., a
-            `cmdFullState` call.
-
-        Args:
-            ep_time: Episode's elapsed time, in seconds.
-            obs: The quadrotor's Vicon data [x, 0, y, 0, z, 0, phi, theta, psi, 0, 0, 0].
-            reward: The reward signal.
-            done: Wether the episode has terminated.
-            info: Current step information as a dictionary with keys 'constraint_violation',
-                'current_target_gate_pos', etc.
-
-        Returns:
-            The command type and arguments to be sent to the quadrotor. See `Command`.
-        """
+    def compute_control(self, ep_time: float, obs: np.ndarray, reward: float | None = None, done: bool | None = None, info: dict | None = None) -> tuple[Command, list]:
         iteration = int(ep_time * self.CTRL_FREQ)
 
         #########################
         # REPLACE THIS (START) ##
         #########################
 
-        # Handcrafted solution for getting_stated scenario.
-
         if not self._take_off:
             command_type = Command.TAKEOFF
             args = [0.3, 2]  # Height, duration
-            self._take_off = True  # Only send takeoff command once
+            self._take_off = True
         else:
-            step = iteration - 2 * self.CTRL_FREQ  # Account for 2s delay due to takeoff
-            if ep_time - 2 > 0 and step < len(self.ref_x):
-                target_pos = np.array([self.ref_x[step], self.ref_y[step], self.ref_z[step]])
+            if ep_time - 20 > 0:
+                # Compute desired state from the reference trajectory
+                ref_index = min(iteration, len(self.reference_trajectory) - 1)
+                target_pos = self.reference_trajectory[ref_index]
                 target_vel = np.zeros(3)
                 target_acc = np.zeros(3)
                 target_yaw = 0.0
                 target_rpy_rates = np.zeros(3)
+
+                # PD control
+                pos_error = target_pos - obs[:3]
+                vel_error = target_vel - obs[3:6]
+                control_output = self.kp * pos_error + self.kd * vel_error
+
                 command_type = Command.FULLSTATE
-                args = [target_pos, target_vel, target_acc, target_yaw, target_rpy_rates, ep_time]
-            # Notify set point stop has to be called every time we transition from low-level
-            # commands to high-level ones. Prepares for landing
-            elif step >= len(self.ref_x) and not self._setpoint_land:
-                command_type = Command.NOTIFYSETPOINTSTOP
-                args = []
-                self._setpoint_land = True
-            elif step >= len(self.ref_x) and not self._land:
-                command_type = Command.LAND
-                args = [0.0, 2.0]  # Height, duration
-                self._land = True  # Send landing command only once
-            elif self._land:
-                command_type = Command.FINISHED
-                args = []
+                args = [target_pos, control_output, target_acc, target_yaw, target_rpy_rates, ep_time]
             else:
                 command_type = Command.NONE
                 args = []
@@ -211,55 +150,22 @@ class Controller(BaseController):
 
         return command_type, args
 
-    def step_learn(
-        self,
-        action: list,
-        obs: np.ndarray,
-        reward: float | None = None,
-        done: bool | None = None,
-        info: dict | None = None,
-    ):
-        """Learning and controller updates called between control steps.
-
-        INSTRUCTIONS:
-            Use the historically collected information in the five data buffers of actions,
-            observations, rewards, done flags, and information dictionaries to learn, adapt, and/or
-            re-plan.
-
-        Args:
-            action: Most recent applied action.
-            obs: Most recent observation of the quadrotor state.
-            reward: Most recent reward.
-            done: Most recent done flag.
-            info: Most recent information dictionary.
-
-        """
+    def step_learn(self, action: list, obs: np.ndarray, reward: float | None = None, done: bool | None = None, info: dict | None = None):
         #########################
         # REPLACE THIS (START) ##
         #########################
 
-        # Store the last step's events.
         self.action_buffer.append(action)
         self.obs_buffer.append(obs)
         self.reward_buffer.append(reward)
         self.done_buffer.append(done)
         self.info_buffer.append(info)
 
-        # Implement some learning algorithm here if needed
-
         #########################
         # REPLACE THIS (END) ####
         #########################
 
     def episode_learn(self):
-        """Learning and controller updates called between episodes.
-
-        INSTRUCTIONS:
-            Use the historically collected information in the five data buffers of actions,
-            observations, rewards, done flags, and information dictionaries to learn, adapt, and/or
-            re-plan.
-
-        """
         #########################
         # REPLACE THIS (START) ##
         #########################

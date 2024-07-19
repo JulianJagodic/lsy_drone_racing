@@ -13,6 +13,7 @@ import logging
 import time
 from functools import partial
 from pathlib import Path
+import csv
 
 import fire
 import numpy as np
@@ -30,8 +31,8 @@ logger = logging.getLogger(__name__)
 
 def simulate(
     config: str = "config/getting_started.yaml",
-    controller: str = "examples/controller.py",
-    n_runs: int = 1,
+    controller: str = "/home/julian/repos/safe-control-gym/competition/edit_this.py",
+    n_runs: int = 100,
     gui: bool = True,
     terminate_on_lap: bool = True,
 ) -> list[float]:
@@ -179,6 +180,29 @@ def log_episode_stats(stats: dict, info: dict, config: Munch, curr_time: float, 
             f"Number of constraint violations: {stats['violations']}\n"
         )
     )
+    
+    # Log Data for CSV file
+    log_data = {
+        "Flight time (s)": curr_time,
+        "Reason for termination": termination,
+        "Gates passed": stats["gates_passed"],
+        "Total reward": stats["ep_reward"],
+        "Number of collisions": stats["collisions"],
+        "Number of constraint violations": stats["violations"],
+    }
+
+    # Log to CSV file
+    #csv_file_path = "/home/julian/repos/lsy_drone_racing/Logs/Level1.csv"
+    #csv_file = Path(csv_file_path)
+    #file_exists = csv_file.is_file()
+    
+    #with open(csv_file_path, mode='a', newline='') as file:
+    #    writer = csv.DictWriter(file, fieldnames=log_data.keys(), delimiter=',')
+    #    
+    #    if not file_exists:
+    #        writer.writeheader()
+    #    
+    #    writer.writerow(log_data)
 
 
 if __name__ == "__main__":
